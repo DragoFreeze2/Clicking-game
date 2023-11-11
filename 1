@@ -1,0 +1,295 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using System.Timers;
+using NLog;
+
+public enum Currency
+{
+    Points
+}
+
+public class PowerUp
+{
+    public string Name { get; set; }
+    public string Description { get; set; }
+    public bool Active { get; set; }
+    public int Cost { get; set; }
+
+    public void Activate()
+    {
+        Console.WriteLine($"Power-up activated: {Name}");
+        // Additional activation logic here...
+    }
+
+    public void Deactivate()
+    {
+        Console.WriteLine($"Power-up deactivated: {Name}");
+        // Additional deactivation logic here...
+    }
+}
+
+public interface IPowerUpRepository
+{
+    List<PowerUp> LoadPowerUps();
+    void SavePowerUps(List<PowerUp> powerUps);
+}
+
+public class JsonPowerUpRepository : IPowerUpRepository
+{
+    private const string PowerUpsFileName = "powerUps.json";
+    private readonly Logger logger = LogManager.GetCurrentClassLogger();
+
+    public List<PowerUp> LoadPowerUps()
+    {
+        try
+        {
+            if (File.Exists(PowerUpsFileName))
+            {
+                string json = File.ReadAllText(PowerUpsFileName);
+                return JsonSerializer.Deserialize<List<PowerUp>>(json);
+            }
+            else
+            {
+                throw new FileNotFoundException($"Power-ups file '{PowerUpsFileName}' not found.");
+            }
+        }
+        catch (FileNotFoundException e)
+        {
+            LogError("Error loading power-ups: " + e.Message);
+            throw new PowerUpLoadException("Error loading power-ups.", e);
+        }
+        catch (JsonException e)
+        {
+            LogError("Error parsing power-ups JSON: " + e.Message);
+            throw new PowerUpLoadException("Error parsing power-ups JSON.", e);
+        }
+    }
+
+    public void SavePowerUps(List<PowerUp> powerUps)
+    {
+        try
+        {
+            string serializedPowerUps = JsonSerializer.Serialize(powerUps);
+            File.WriteAllText(PowerUpsFileName, serializedPowerUps);
+        }
+        catch (IOException e)
+        {
+            LogError("Error saving power-ups: " + e.Message);
+            throw new PowerUpSaveException("Error saving power-ups.", e);
+        }
+        catch (JsonException e)
+        {
+            LogError("Error serializing power-ups to JSON: " + e.Message);
+            throw new PowerUpSaveException("Error serializing power-ups to JSON.", e);
+        }
+    }
+
+    private void LogError(string message)
+    {
+        logger.Error(message);
+    }
+}
+
+public class PowerUpSaveException : Exception
+{
+    public PowerUpSaveException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+public class PowerUpLoadException : Exception
+{
+    public PowerUpLoadException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+public class PowerUpEventArgs : EventArgs
+{
+    public PowerUp PowerUp { get; }
+
+    public PowerUpEventArgs(PowerUp powerUp)
+    {
+        PowerUp = powerUp;
+    }
+}
+
+public class GameEventManager
+{
+    public event EventHandler<PowerUpEventArgs> PowerUpActivated;
+    public event EventHandler<PowerUpEventArgs> PowerUpDeactivated;
+
+    public void ActivatePowerUp(PowerUp powerUp)
+    {
+        powerUp.Active = true;
+        PowerUpActivated?.Invoke(this, new PowerUpEventArgs(powerUp));
+        powerUp.Activate(); // Activate the power-up
+    }
+
+    public void DeactivatePowerUp(PowerUp powerUp)
+    {
+        powerUp.Active = false;
+        PowerUpDeactivated?.Invoke(this, new PowerUpEventArgs(powerUp));
+        powerUp.Deactivate(); // Deactivate the power-up
+    }
+}
+
+public class GameInputManager
+{
+    private readonly GameEventManager gameEventManager;
+    private readonly List<PowerUp> powerUps;
+
+    public GameInputManager(GameEventManager eventManager, List<PowerUp> powerUps)
+    {
+        gameEventManager = eventManager;
+        this.powerUps = powerUps;
+    }
+
+    public void HandleInput()
+    {
+        // ... Handle input logic ...
+    }
+}
+
+public class GameLoopManager : IDisposable
+{
+    private readonly Timer gameLoopTimer;
+    private DateTime previousTime;
+    private readonly Action<double> onUpdate;
+
+    public GameLoopManager(double interval, Action<double> onUpdate)
+    {
+        previousTime = DateTime.Now;
+        gameLoopTimer = new Timer(interval);
+        gameLoopTimer.Elapsed += GameLoop;
+        this.onUpdate = onUpdate;
+    }
+
+    public void Start()
+    {
+        gameLoopTimer.Start();
+    }
+
+    public void Stop()
+    {
+        gameLoopTimer.Stop();
+    }
+
+    private void GameLoop(object sender, ElapsedEventArgs e)
+    {
+        DateTime currentTime = DateTime.Now;
+        double deltaTime = (currentTime - previousTime).TotalSeconds;
+        previousTime = currentTime;
+
+        onUpdate(deltaTime);
+    }
+
+    public void Dispose()
+    {
+        gameLoopTimer.Stop();
+        gameLoopTimer.Dispose();
+    }
+}
+
+public class GameManager : IDisposable
+{
+    private readonly List<PowerUp> powerUps = new List<PowerUp>();
+    private readonly GameLoopManager gameLoopManager;
+    private readonly GameEventManager gameEventManager;
+    private bool isGameOver;
+
+    public GameManager(IPowerUpRepository powerUpRepository)
+    {
+        InitializeGame(powerUpRepository);
+    }
+
+    private void InitializeGame(IPowerUpRepository powerUpRepository)
+    {
+        LoadPowerUps(powerUpRepository);
+        SetupEventManager();
+        SetupGameLoop();
+        // Initialize other game-related variables and settings here
+    }
+
+    private void SetupEventManager()
+    {
+        gameEventManager = new GameEventManager();
+        gameEventManager.PowerUpActivated += OnPowerUpActivated;
+        gameEventManager.PowerUpDeactivated += OnPowerUpDeactivated;
+    }
+
+    private void SetupGameLoop()
+    {
+        gameLoopManager = new GameLoopManager(1000, OnUpdate);
+        gameLoopManager.Start();
+    }
+
+    private void LoadPowerUps(IPowerUpRepository powerUpRepository)
+    {
+        try
+        {
+            powerUps.AddRange(powerUpRepository.LoadPowerUps());
+        }
+        catch (PowerUpLoadException ex)
+        {
+            LogError($"Error loading power-ups: {ex.Message}");
+            // Handle the exception appropriately
+        }
+    }
+
+    private void OnPowerUpActivated(object sender, PowerUpEventArgs e)
+    {
+        PowerUp activatedPowerUp = e.PowerUp;
+        // Handle power-up activation...
+        activatedPowerUp.Activate(); // Activate the power-up
+    }
+
+    private void OnPowerUpDeactivated(object sender, PowerUpEventArgs e)
+    {
+        PowerUp deactivatedPowerUp = e.PowerUp;
+        // Handle power-up deactivation...
+        deactivatedPowerUp.Deactivate(); // Deactivate the power-up
+    }
+
+    public void OnUpdate(double deltaTime)
+    {
+        if (!isGameOver)
+        {
+            // ... Game update logic ...
+        }
+    }
+
+    public void Dispose()
+    {
+        gameLoopManager?.Dispose();
+    }
+
+    // Add other methods and game logic here
+
+    public void SaveGameProgress()
+    {
+        // Implement code to save the game's progress
+    }
+
+    public void ReleaseResources()
+    {
+        // Implement code to release any allocated resources
+    }
+}
+
+public class Program
+{
+    public static void Main()
+    {
+        LogManager.LoadConfiguration("nlog.config");
+
+        using (GameManager gameManager = new GameManager(new JsonPowerUpRepository()))
+        {
+            Console.WriteLine("Game Started. Press any key to stop the game...");
+            gameManager.Start();
+            Console.ReadKey();
+            gameManager.Stop();
+            gameManager.Dispose(); // Dispose resources when the game is stopped
+            gameManager.SaveGameProgress();
+            gameManager.ReleaseResources();
+        }
+    }
+}
